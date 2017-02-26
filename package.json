@@ -7,11 +7,17 @@
     "test": "node_modules/mocha/bin/mocha --recursive"
   },
   "dependencies": {
-    "express": "*"
+    "body-parser": "^1.16.1",
+    "express": "*",
+    "jsonwebtoken": "^7.3.0",
+    "morgan": "^1.8.1",
+    "winston": "^2.3.1"
   },
   "devDependencies": {
     "chai": "^3.5.0",
     "mocha": "^2.4.5",
+    "passport": "^0.3.2",
+    "passport-http-bearer": "^1.0.1",
     "supertest": "^1.2.0",
     "supertest-as-promised": "^3.1.0"
   }

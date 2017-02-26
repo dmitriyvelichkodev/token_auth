@@ -77,7 +77,7 @@ describe('Profile controller', () => {
       .set('Authorization', 'Bearer ' + _token)
       .expect(200)
       .then((data) => {
-        assert.equal(data.body.email, _user);
+        assert.equal(data.body.email, email);
       });
   });
 
