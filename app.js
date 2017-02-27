@@ -1,19 +1,31 @@
 'use strict';
 
+// TODO refresh token
+// TODO logout
+// TODO mongodb connection
+// TODO clearer config
+// TODO config migration
+// TODO maybe create additional identity server for Oauth2
+
 let express        = require('express'),
     passport       = require('passport'),
     BearerStrategy = require('passport-http-bearer').Strategy,
     bodyParser     = require('body-parser'),
+    User           = require('./libs/db').User,
     morgan         = require('morgan'),
     config         = require('./config'),
     log            = require('./libs/log')(module),
     jwt            = require('jsonwebtoken');
 
 
-let records = [
-    { id: 1, name: 'jack', password: 'asdfasdf', email: 'jack@example.com', token: '123456789' },
-    { id: 2, name: 'jill', password: '123123', email: 'jill@example.com', token: 'abcdefghi' }
-];
+function ServerReject(status, message) {
+  this.status = status || 500;
+  this.message = message || 'Internal Error';
+  this.stack = (new Error()).stack;
+}
+ServerReject.prototype = Object.create(Error.prototype);
+ServerReject.prototype.constructor = ServerReject;
+
 
 
 passport.use(new BearerStrategy(
@@ -23,56 +35,93 @@ passport.use(new BearerStrategy(
       if (!user) { return cb(null, false); }
       return cb(null, user);
     });
-	}
+    }
 ));
 
+
+
+///PROMISE
+function requestUser(reqUser) {
+    return new Promise(function(resolve, reject) {
+        // console.log("REQUEST email : " + reqUser.email);//DEL
+
+        if (!reqUser) 
+            throw new ServerReject(400, "No user info specified");
+        if (!reqUser.email) 
+            throw new ServerReject(400, `Didn't specify user email`);
+        if (!reqUser.password) 
+            throw new ServerReject(400, `Didn't specify user password`); 
+
+        User.findOne({"email": reqUser.email},
+            function(err, resUser) {
+                if(err) {
+                    console.debug(err);
+                    reject(err);
+                }
+                // console.log(`resUser: ${resUser}`);//DEL
+                resolve({
+                    reqUser: reqUser,
+                    resUser: resUser
+                });
+            });
+        });
+}
+function insertUser(user) {
+    return new Promise(function(resolve, reject) {
+        let tmp = new User(user);
+        tmp.save(function (err, data) {
+            if (err) {
+                log.debug(`mongo : ${err}`);
+                reject(`mongo : ${err}`);
+            }
+            else resolve({token: user.token});
+        });
+    });
+}
+function updateToken(user, expirationTime) {
+    return new Promise(function(resolve, reject) {
+        let newToken = genToken(user, expirationTime);
+        User.update({email: user.email}, {token: newToken},
+            function(err, affected, resp) {
+                if (err) {
+                    log.debug(`mongo : ${err}`);
+                    reject(`mongo : ${err}`);
+                }
+                else resolve({token: newToken});
+        });
+    });
+}
 function findByToken(token, cb) {
-	// TODO decript token and check expiraion time
-	for(let i=0; i<records.length; i++) {
-		if (records[i].token === token) {
-			console.log(records[i]);
-			return cb(null, records[i]);
-		}
-	}
-	return cb(null, false);
+    User.findOne({"token": token},
+        function(err, user) {
+            if(err) {
+                console.debug(err);
+                return cb(null, false);;
+            }
+            // TODO decript token and check expiraion time
+
+            // console.log(`resUser: ${resUser}`);//DEL
+            return cb(null, user);
+        });
 }
-function isAlreadyRegistered(user) {
-	for(let i=0; i<records.length; i++) {
-		if (records[i].email === user.email) {
-			return true;
-		}
-	}
-	return false;
+function isValidCredentials(result) {
+    return (result.reqUser.email === result.resUser.email &&
+        result.reqUser.password === result.resUser.password)
 }
-function validateCredentials(user) {
-	for(let i=0; i<records.length; i++) {
-		if (records[i].email === user.email) {
-			if (records[i].password === user.password) {
-				let token = refreshToken(records[i].token);
-				return {value: true, token: token};
-			}
-			else return {value: false};
-		}
-	}
-	return {value: false};
+function genToken(user, expirationTime) {
+    //var salt = new Buffer(crypto.randomBytes(16).toString('base64'), 'base64');
+    return jwt.sign({email: user.email, name: user.name}, app.get('key'), {
+              expiresIn: expirationTime 
+            });
 }
 
-function genToken(user, expirationTime) {
-	return jwt.sign({email: user.email, name: user.name}, app.get('key'), {
-	          expiresIn: 1440*60 
-	        });
-}
-function refreshToken(token) {
-	// TODO parse token check time and return fresh
-	return token
-}
+
+
 
 
 let app = express();
 
 // configuration 
-var port = process.env.PORT || 8080; 
-// TODO mongoose.connect(config.database); 
 app.set('key', config.key);
 app.use(bodyParser.urlencoded({ extended: false }));
 app.use(bodyParser.json());
@@ -81,72 +130,79 @@ app.use(passport.initialize());
 
 
 app.post('/api/register',
-	function(req, res) {
-		let user = req.body;
-		if (!(user.email && user.password)) {
-			log.debug(`Didn't specify user email or password: ${req.url}`);
-    		res.status(400).json({
-	    		success: false,
-	        	message: "Didn't specify user email or password"
-	    	});
-    		return;
-		}
-		if (isAlreadyRegistered(user)) {
-			log.debug(`User has already registered: ${user.name}`);
-			res.status(400).json({
-				sucess: false,
-				message: "User has already registered"
-			});
-			return;
-		}
+    function(req, res) {
+        let user = req.body;
 
-		let token = genToken(user, 4*60*60);
-
-		// TODO save to bd
-		records.push({ 
-			id: records.length,
-			name: user.name, 
-			token: token, 
-			email: user.email,
-			password: user.password });
-
-	    res.status(201).json({
-	    	success: true,
-	        token: token
-	    });
+        requestUser(user)
+            .then(function(result) {
+                // console.log(`from db .... ${result.resUser}`);//DEL
+                if(result.resUser) {
+                    throw new ServerReject(400, `User has already registered: ${result.resUser.email}`)
+                } else {
+                    // console.log(token);//DEL
+                    return insertUser({
+                            name: result.reqUser.name, 
+                            token: genToken(result.reqUser, 4*60*60), 
+                            email: result.reqUser.email,
+                            password: result.reqUser.password 
+                        });
+                }
+            })
+            .then(function(result) {
+                res.status(201).json({
+                    success: true,
+                    token: result.token
+                });
+            })
+            .catch(function(err) {
+                res.status(err.status);
+                log.debug(`(${res.statusCode}): ${err.message}`);
+                res.json({ 
+                    success: false,
+                    response: err.message
+                });
+            });
     });
 
 app.post('/api/login',
-  	function(req, res) {
-  		let user = req.body;
-		if (!(user.email && user.password)) {
-			log.debug(`Didn't specify user email or password: ${req.url}`);
-			res.statusMessage = "Didn't specify user email or password";
-    		res.status(400).end();
-    		return;
-		}	
+    function(req, res) {
+        let user = req.body;
 
-		let result = validateCredentials(user);
+        requestUser(user)
+            .then(function(result) {
+                if(!result.resUser)
+                    throw new ServerReject(400, `User with: ${result.resUser.email} not registered yet`)
+                if (!isValidCredentials(result))
+                    throw new ServerReject(400, 'Password is incorrect');
 
-		if (!result.value) {
-			res.statusMessage = "Uncorrect password or email";
-			res.status(400).end();
-			return;
-		}
-
-    	res.status(200).json({
-        	token: result.token
-    	});
+                return updateToken(result.resUser, 4*60*60);
+            })
+            .then(function(result) {
+                res.status(200).json({
+                    success: true,
+                    token: result.token
+                });
+            })
+            .catch(function(err) {
+                res.status(err.status);
+                log.debug(`(${res.statusCode}): ${err.message}`);
+                res.json({ 
+                    success: false,
+                    response: err.message
+                });
+            });
   });
 
 
 app.get('/api/profile',
   passport.authenticate('bearer', { session: false }),
   function(req, res) {
+
     res.json({ 
-    	email: req.user.email,
-    	name: req.user.name
+        email: req.user.email,
+        name: req.user.name
     });
+
   });
 
 
@@ -167,8 +223,8 @@ app.use(function(err, req, res, next){
 
 
 
-app.listen(port, function(){
-    log.info(`Express server listening on port ${port}`);
+app.listen(config.port, function(){
+    log.info(`Express server listening on port ${config.port}`);
 });
 
 module.exports = app;

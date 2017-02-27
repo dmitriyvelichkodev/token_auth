@@ -1,4 +1,5 @@
 module.exports = {
+	'port': 8080,
     'key': 'howtomakethislifebetter',
-    'database': ''
+    'database': 'mongodb://localhost/test1'
 };
