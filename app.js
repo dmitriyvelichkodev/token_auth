@@ -1,10 +1,7 @@
 'use strict';
 
-// TODO refresh token
-// TODO logout
-// TODO mongodb connection
 // TODO clearer config
-// TODO config migration
+// TODO db migration
 // TODO maybe create additional identity server for Oauth2
 
 let express        = require('express'),
@@ -12,6 +9,7 @@ let express        = require('express'),
     BearerStrategy = require('passport-http-bearer').Strategy,
     bodyParser     = require('body-parser'),
     User           = require('./libs/db').User,
+    crypto         = require('crypto'),
     morgan         = require('morgan'),
     config         = require('./config'),
     log            = require('./libs/log')(module),
@@ -43,8 +41,6 @@ passport.use(new BearerStrategy(
 ///PROMISE
 function requestUser(reqUser) {
     return new Promise(function(resolve, reject) {
-        // console.log("REQUEST email : " + reqUser.email);//DEL
-
         if (!reqUser) 
             throw new ServerReject(400, "No user info specified");
         if (!reqUser.email) 
@@ -58,7 +54,6 @@ function requestUser(reqUser) {
                     console.debug(err);
                     reject(err);
                 }
-                // console.log(`resUser: ${resUser}`);//DEL
                 resolve({
                     reqUser: reqUser,
                     resUser: resUser
@@ -91,31 +86,51 @@ function updateToken(user, expirationTime) {
         });
     });
 }
+function deleteToken(user) {
+    return new Promise(function(resolve, reject) {
+        User.update({email: user.email}, {token: ""},
+            function(err, affected, resp) {
+                if (err) {
+                    log.debug(`mongo : ${err}`);
+                    reject(`mongo : ${err}`);
+                }
+                else resolve();
+        });
+    });
+}
 function findByToken(token, cb) {
     User.findOne({"token": token},
         function(err, user) {
             if(err) {
                 console.debug(err);
-                return cb(null, false);;
+                return cb(null, false);
             }
-            // TODO decript token and check expiraion time
-
-            // console.log(`resUser: ${resUser}`);//DEL
+            if(!user) {
+                console.debug("no entry for token");
+                return cb(null, false);
+            }
+            try {
+                jwt.verify(token, app.get('key'));
+            } catch(e) {
+                return cb(e, false);
+            }
             return cb(null, user);
         });
 }
 function isValidCredentials(result) {
     return (result.reqUser.email === result.resUser.email &&
-        result.reqUser.password === result.resUser.password)
+        passwordEncrypt(result.reqUser.password, result.resUser.salt) === result.resUser.password)
 }
 function genToken(user, expirationTime) {
-    //var salt = new Buffer(crypto.randomBytes(16).toString('base64'), 'base64');
+    // var salt = new Buffer(crypto.randomBytes(16).toString('base64'), 'base64');
+    // use not exactly bearer token
     return jwt.sign({email: user.email, name: user.name}, app.get('key'), {
               expiresIn: expirationTime 
             });
 }
-
-
+function passwordEncrypt(password, salt) {
+    return crypto.createHmac('sha1', salt).update(password).digest('hex');
+}
 
 
 
@@ -135,16 +150,16 @@ app.post('/api/register',
 
         requestUser(user)
             .then(function(result) {
-                // console.log(`from db .... ${result.resUser}`);//DEL
                 if(result.resUser) {
                     throw new ServerReject(400, `User has already registered: ${result.resUser.email}`)
                 } else {
-                    // console.log(token);//DEL
+                    let salt = crypto.randomBytes(128).toString('base64');
                     return insertUser({
                             name: result.reqUser.name, 
                             token: genToken(result.reqUser, 4*60*60), 
                             email: result.reqUser.email,
-                            password: result.reqUser.password 
+                            password: passwordEncrypt(result.reqUser.password, salt),
+                            salt: salt 
                         });
                 }
             })
@@ -193,12 +208,10 @@ app.post('/api/login',
             });
   });
 
-
 app.get('/api/profile',
-  passport.authenticate('bearer', { session: false }),
-  function(req, res) {
-
-    res.json({ 
+    passport.authenticate('bearer', { session: false }),
+    function(req, res) {
+        res.json({ 
         email: req.user.email,
         name: req.user.name
     });
@@ -217,7 +230,7 @@ app.use(function(req, res, next){
 app.use(function(err, req, res, next){
     res.status(err.status || 500);
     log.error(`Internal error(${res.statusCode}): ${err.message}`);
-    res.send({ error: err.message });
+    res.send({error: err.message});
     return;
 });
 
